@@ -1,0 +1,138 @@
+Parameters:
+  apiName:
+    Type: String
+  apiOwner:
+    Type: String
+    Default: DE
+  description:
+    Type: String
+    Default: ML API
+  endpointName:
+    Type: String
+  lambdaFunctionName:
+    Type: String
+  stageName:
+    Type: String
+    Default: dev
+  type:
+    Type: String
+    Default: REGIONAL
+Resources:
+
+  MLApi:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Body:
+        openapi: 3.0.1
+        info:
+          title: !Ref apiName
+          description: API Documentation
+          license:
+            name: Apache 2.0
+            url: 'http://www.apache.org/licenses/LICENSE-2.0.html'
+          version: 1.0.0
+        paths:
+          '/sentiments/tweet/lambda':
+            post:
+              responses:
+                '200':
+                  description: successful operation
+                  content: {}
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${lambdaFunctionName}/invocations"
+                httpMethod: "POST"
+                responses:
+                  default:
+                    statusCode: "200"
+                passthroughBehavior: "when_no_match"
+                contentHandling: "CONVERT_TO_TEXT"
+                type: "aws_proxy"
+          '/sentiments/tweet':
+            post:
+              responses:
+                '200':
+                  description: successful operation
+                  content: {}
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: POST
+                credentials: !GetAtt 'MLApiRole.Arn'
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:runtime.sagemaker:path/endpoints/${endpointName}/invocations"
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseTemplates:
+                      application/json: |-
+                        {
+                          "sentiments": {
+                              #set( $predictions = $input.path('$.predictions') )
+                              "label": #if(response['predictions'][0][0]>=0.5)"positive" #else "negative" #end ,
+                              "score": $predictions['predictions'][0][0]
+                          }
+                        }
+                requestTemplates:
+                  text/plain: |-
+                      $input.json('$.tweet')
+                passthroughBehavior: never
+      Description: !Ref description
+      EndpointConfiguration:
+        Types:
+          - !Ref type
+      Name: !Ref apiName
+      Tags:
+        - Key: Owner
+          Value: !Ref apiOwner
+          
+  MLApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - MLApi
+    Properties:
+      RestApiId: !Ref MLApi
+      StageName: !Ref stageName
+          
+  MLApiRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'ML-APIGATEWAY-ROLE-${apiName}'
+      Path: /
+      ManagedPolicyArns:
+        - >-
+          arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+              
+  MLApiPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub 'ML-APIGATEWAY-POLICY-${apiName}'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'sagemaker:InvokeEndpoint'
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/${endpointName}"
+          - Effect: Allow
+            Action:
+              - 'lambda:InvokeFunction'
+            Resource:
+              - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${lambdaFunctionName}"
+      Roles:
+        - !Ref MLApiRole
+        
+  LambdaApiGatewayPermissions:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${lambdaFunctionName}"
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MLApi}/${MLApiDeployment}/POST/sentiments/tweet/lambda"

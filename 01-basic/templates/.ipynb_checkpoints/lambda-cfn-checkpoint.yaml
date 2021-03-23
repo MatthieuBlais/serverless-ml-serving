@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AppSync Template 
+
+Parameters:
+
+  endpointName:
+    Type: String
+    
+  owner:
+    Type: String
+    Default: DE
+  
+Resources:
+
+  SageMakerDemoInvoke:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          sagemaker = boto3.client('sagemaker-runtime')
+          ENDPOINT_NAME = os.environ['ENDPOINT_NAME']
+          
+          def handler(event, context):
+              print("New event", json.dumps(event['body']))
+              response = {}
+              http_response = {}
+              try:
+                  result = sagemaker.invoke_endpoint(EndpointName=ENDPOINT_NAME, Body=event['body'])
+                  response = json.loads(result['Body'].read())
+                  http_response = {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          "sentiment": {
+                              "label": "positive" if response["predictions"][0][0]>=0.5,
+                              "score": response["predictions"][0][0]
+                          }
+                      }),
+                      'headers':{
+                          'Content-Type':'application/json',
+                          'Access-Control-Allow-Origin':'*'
+                      }
+                  }
+              except Exception as e:
+                  http_response = {
+                      'statusCode': 500,
+                      'body': json.dumps(response),
+                      'headers':{
+                          'Content-Type':'application/json',
+                          'Access-Control-Allow-Origin':'*'
+                      }
+                  }
+              print("Response", json.dumps(response))
+              return http_response
+      Description: "Trigger Sagemaker endpoint"
+      FunctionName: !Sub "ml-sagemaker-serving"
+      Handler: "index.handler"
+      MemorySize: 256 
+      Role: !GetAtt 'LambdaRole.Arn'
+      Runtime: python3.8
+      Timeout: 3 
+      Environment:
+        Variables:
+            ENDPOINT_NAME: !Ref endpointName
+      Tags:
+        - Key: Owner
+          Value: !Ref owner
+            
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      RoleName: "ml-sagemaker-serving-role"
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+    
+  LambdaPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: "ml-sagemaker-serving-policy"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'sagemaker:InvokeEndpoint'
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/${endpointName}"
+      Roles:
+        - !Ref LambdaRole
+        
+Outputs:
+    SageMakerDemoInvoke:
+        Value: !Ref SageMakerDemoInvoke
