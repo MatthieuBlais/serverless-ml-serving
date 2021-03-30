@@ -62,7 +62,7 @@ def load_testing(users, spawn_rate, run_time, host, output_bucket=None, output_k
     if output_bucket:
         save_results(output_bucket, output_key, results)
 
-# locust -f apigateway.py --headless -u 10 -r 5 -t 5m --host xxx
+# locust -f apigateway.py --headless -u 10 -r 5 -t 5m --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--users", "-u", type=int, default=5)
