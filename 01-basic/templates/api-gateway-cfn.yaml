@@ -66,12 +66,12 @@ Resources:
                         {
                           "sentiments": {
                               #set( $predictions = $input.path('$.predictions') )
-                              "label": #if(response['predictions'][0][0]>=0.5)"positive" #else "negative" #end ,
-                              "score": $predictions['predictions'][0][0]
+                              "label": #if($predictions[0][0]>=0.5)"positive" #else "negative" #end,
+                              "score": $predictions[0][0]
                           }
                         }
                 requestTemplates:
-                  text/plain: |-
+                  application/json: |-
                       $input.json('$.tweet')
                 passthroughBehavior: never
       Description: !Ref description
@@ -135,4 +135,4 @@ Resources:
       Action: lambda:InvokeFunction
       FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${lambdaFunctionName}"
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MLApi}/${MLApiDeployment}/POST/sentiments/tweet/lambda"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MLApi}/*"

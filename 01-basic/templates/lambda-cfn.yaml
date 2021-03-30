@@ -25,17 +25,18 @@ Resources:
           ENDPOINT_NAME = os.environ['ENDPOINT_NAME']
           
           def handler(event, context):
-              print("New event", json.dumps(event['body']))
+              print("New event", event['body'])
               response = {}
               http_response = {}
               try:
-                  result = sagemaker.invoke_endpoint(EndpointName=ENDPOINT_NAME, Body=event['body'])
+                  text_input = json.loads(event['body'])
+                  result = sagemaker.invoke_endpoint(EndpointName=ENDPOINT_NAME, Body=text_input['tweet'])
                   response = json.loads(result['Body'].read())
                   http_response = {
                       'statusCode': 200,
                       'body': json.dumps({
                           "sentiment": {
-                              "label": "positive" if response["predictions"][0][0]>=0.5,
+                              "label": "positive" if response["predictions"][0][0]>=0.5 else "negative",
                               "score": response["predictions"][0][0]
                           }
                       }),
