@@ -1,0 +1,95 @@
+{
+    "StartAt": "Generate jobs",
+    "States": {
+        "Generate jobs": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:::function:ml-serving-initialize",
+            "Catch":[
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.Error",
+                    "Next": "Fail"
+                }
+            ],
+            "Next": "Response Time Analysis"
+        },
+        "Response Time Analysis": {
+            "Type": "Map",
+            "ItemsPath": "$.Jobs",
+            "MaxConcurrency": 0,
+            "Iterator": {
+              "StartAt": "Create Endpoint Config",
+              "States": {
+                "Create Endpoint Config": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::sagemaker:createEndpointConfig",
+                    "Parameters":{
+                      "EndpointConfigName.$": "$.EndpointName",
+                      "ProductionVariants": [ 
+                        { 
+                          "InitialInstanceCount": 1,
+                          "InstanceType": "$.InstanceType",
+                          "ModelName.$": "$.ModelName",
+                          "VariantName": "$.VariantName"
+                        }
+                      ]
+                    },
+                    "ResultPath":"$.taskresult",
+                    "Next":"Create Endpoint"
+                },
+                "Create Endpoint":{
+                    "Type":"Task",
+                    "Resource":"arn:aws:states:::sagemaker:createEndpoint",
+                    "Parameters":{
+                      "EndpointConfigName.$": "$.EndpointName",
+                      "EndpointName.$": "$.EndpointName"
+                    },
+                    "Next": "Test Response Time"
+                },
+                "Test Response Time": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::ecs:runTask.sync",
+                    "Parameters": {
+                        "Cluster": "$.JobDetails.ClusterName",
+                        "TaskDefinition": "$.JobDetails.TaskDefinition",
+                        "Overrides": {
+                            "ContainerOverrides": [
+                                {
+                                    "Name": "container-name",
+                                    "Command.$": "$.commands" 
+                                }
+                            ]
+                        }
+                    },
+                    "Next": "Clean-up"
+                },
+                "Clean-up": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:::function:ml-serving-cleanup",
+                    "End": true
+                }
+              }
+            },
+            "Catch":[
+                {
+                    "ErrorEquals":["States.ALL"],
+                    "ResultPath":"$.error",
+                    "Next":"Fail"
+                }
+            ],
+            "ResultPath": null,
+            "Next": "Recommend"
+        },
+        "Recommend": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:::function:ml-serving-recommend",
+            "Next": "Success"
+        },
+        "Success": {
+            "Type": "Succeed"
+        },
+        "Fail": {
+            "Type": "Fail"
+        }
+    }
+  }
