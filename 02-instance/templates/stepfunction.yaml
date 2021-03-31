@@ -1,0 +1,212 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+
+  workflowName:
+    Type: String
+    Default: ml-serving-perf-test
+
+Resources:
+
+  InitializeLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: {{ LambdaCodeKey }}
+      Description: "Prepare perf test jobs"
+      FunctionName: ml-serving-initialize
+      Handler: "initialize.handler"
+      MemorySize: 128
+      Role: !GetAtt [LambdaCFNRole, Arn]
+      Runtime: python3.8
+      Timeout: 15
+      {% if AwsDeploymentRole is defined and AwsDeploymentRole != '' %}
+      Environment:
+        Variables:
+          ASSUME_ROLE_ARN: {{ AwsDeploymentRole }}
+      {% endif %}
+
+  GetStackStatusLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: {{ LambdaCodeKey }}
+      Description: "Get status of CFN template"
+      FunctionName: !Sub "${StackPrefix}-deployer-core-get-status"
+      Handler: "status.handler"
+      MemorySize: 128
+      Role: !GetAtt [LambdaDeployerRole, Arn]
+      Runtime: python3.8
+      Timeout: 15
+      {% if AwsDeploymentRole is defined  and AwsDeploymentRole != '' %}
+      Environment:
+        Variables:
+          ASSUME_ROLE_ARN: {{ AwsDeploymentRole }}
+      {% endif %}
+
+  CleanupLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: {{ LambdaCodeKey }}
+      Description: "Delete failed stack"
+      FunctionName: !Sub "${StackPrefix}-deployer-core-cleanup"
+      Handler: "cleanup.handler"
+      MemorySize: 128
+      Role: !GetAtt [LambdaCFNRole, Arn]
+      Runtime: python3.8
+      Timeout: 15
+      {% if AwsDeploymentRole is defined  and AwsDeploymentRole != '' %}
+      Environment:
+        Variables:
+          ASSUME_ROLE_ARN: {{ AwsDeploymentRole }}
+      {% endif %}
+
+  FailureLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: {{ LambdaCodeKey }}
+      Description: "Gracefully fails"
+      FunctionName: !Sub "${StackPrefix}-deployer-core-failed"
+      Handler: "failed.handler"
+      MemorySize: 128
+      Role: !GetAtt [LambdaDeployerRole, Arn]
+      Runtime: python3.8
+      Timeout: 15
+
+  StateMachineWorkflow:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn: LogGroup
+    Properties:
+      StateMachineName: !Ref workflowName
+      DefinitionString: |-
+        {
+          "StartAt": "Generate jobs",
+          "States": {
+              "Generate jobs": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:::function:ml-serving-initialize",
+                  "Catch":[
+                      {
+                          "ErrorEquals": ["States.ALL"],
+                          "ResultPath": "$.Error",
+                          "Next": "Fail"
+                      }
+                  ],
+                  "Next": "Response Time Analysis"
+              },
+              "Response Time Analysis": {
+                  "Type": "Map",
+                  "ItemsPath": "$.Jobs",
+                  "MaxConcurrency": 0,
+                  "Iterator": {
+                    "StartAt": "Create Endpoint Config",
+                    "States": {
+                      "Create Endpoint Config": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:states:::sagemaker:createEndpointConfig",
+                          "Parameters":{
+                            "EndpointConfigName.$": "$.EndpointName",
+                            "ProductionVariants": [ 
+                              { 
+                                "InitialInstanceCount": 1,
+                                "InstanceType": "$.InstanceType",
+                                "ModelName.$": "$.ModelName",
+                                "VariantName": "$.VariantName"
+                              }
+                            ]
+                          },
+                          "Next":"Create Endpoint"
+                      },
+                      "Create Endpoint":{
+                          "Type":"Task",
+                          "Resource":"arn:aws:states:::sagemaker:createEndpoint",
+                          "Parameters":{
+                            "EndpointConfigName.$": "$.EndpointName",
+                            "EndpointName.$": "$.EndpointName"
+                          },
+                          "Next": "Test Response Time"
+                      },
+                      "Test Response Time": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:states:::ecs:runTask.sync",
+                          "Parameters": {
+                              "Cluster": "$.JobDetails.ClusterName",
+                              "TaskDefinition": "$.JobDetails.TaskDefinition",
+                              "Overrides": {
+                                  "ContainerOverrides": [
+                                      {
+                                          "Name": "container-name",
+                                          "Command.$": "$.commands" 
+                                      }
+                                  ]
+                              }
+                          },
+                          "Next": "Clean-up"
+                      },
+                      "Clean-up": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:lambda:::function:ml-serving-cleanup",
+                          "End": true
+                      }
+                    }
+                  },
+                  "Catch":[
+                      {
+                          "ErrorEquals":["States.ALL"],
+                          "ResultPath":"$.error",
+                          "Next":"Fail"
+                      }
+                  ],
+                  "ResultPath": null,
+                  "Next": "Recommend"
+              },
+              "Recommend": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:::function:ml-serving-recommend",
+                  "Next": "Success"
+              },
+              "Success": {
+                  "Type": "Succeed"
+              },
+              "Fail": {
+                  "Type": "Fail"
+              }
+          }
+        }
+      RoleArn: !GetAtt "StateMachineRole.Arn"
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+        - CloudWatchLogsLogGroup:
+            LogGroupArn: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/${workflowName}:*"
+        IncludeExecutionData: True
+        Level: "ALL"
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/vendedlogs/states/${workflowName}"
+      RetentionInDays: 7
+
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+        Version: "2012-10-17"
+      Path: "/"
+      ManagedPolicyArns: []
+
+  
