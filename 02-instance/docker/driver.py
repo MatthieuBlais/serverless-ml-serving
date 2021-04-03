@@ -14,13 +14,21 @@ s3 = boto3.client('s3', region_name=os.environ["AWS_REGION"])
 
 def save_results(bucket, key, results):
     """Save output to S3"""
+    existing = []
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        existing = json.loads(obj['Body'].read())
+    except Exception:
+        existing = []
+    existing.append(results)
     s3.put_object(
         Bucket=bucket,
         Key=key,
-        Body=json.dumps(results)
+        Body=json.dumps(existing)
     )
 
 def load_testing(users, spawn_rate, run_time, host, output_bucket=None, output_key=None):
+    
     # setup Environment and Runner
     env = Environment(user_classes=[APIInterface])
     env.host = host
@@ -55,14 +63,13 @@ def load_testing(users, spawn_rate, run_time, host, output_bucket=None, output_k
         "response_time_percentile_75": env.stats.total.get_current_response_time_percentile(0.75) or 0,
         "response_time_percentile_66": env.stats.total.get_current_response_time_percentile(0.66) or 0,
         "response_time_percentile_50": env.stats.total.get_current_response_time_percentile(0.5) or 0,
-        "user_count": env.runner.user_count or 0,
+        "user_count": users,
         "num_requests": env.stats.total.num_requests
     }
     print(results)
     if output_bucket:
         save_results(output_bucket, output_key, results)
 
-# locust -f apigateway.py --headless -u 10 -r 5 -t 5m --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--users", "-u", type=int, default=5)
@@ -72,7 +79,9 @@ if __name__ == "__main__":
     parser.add_argument("--output-bucket", default=None)
     parser.add_argument("--output-key", default=None)
     args = parser.parse_args()
-    load_testing(args.users, args.spawn_rate, args.run_time, args.host)
+
+    print(f"Configuration: users={args.users}, spawn-rate={args.spawn_rate}, run-time={args.run_time}, host={args.host}, output=s3://{args.output_bucket}/{args.output_key}")
+    load_testing(args.users, args.spawn_rate, args.run_time, args.host, args.output_bucket, args.output_key)
 
 
     

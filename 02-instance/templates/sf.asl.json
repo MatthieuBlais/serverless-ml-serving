@@ -1,95 +1,160 @@
 {
-    "StartAt": "Generate jobs",
-    "States": {
-        "Generate jobs": {
-            "Type": "Task",
-            "Resource": "arn:aws:lambda:::function:ml-serving-initialize",
-            "Catch":[
-                {
-                    "ErrorEquals": ["States.ALL"],
-                    "ResultPath": "$.Error",
-                    "Next": "Fail"
-                }
-            ],
-            "Next": "Response Time Analysis"
-        },
-        "Response Time Analysis": {
-            "Type": "Map",
-            "ItemsPath": "$.Jobs",
-            "MaxConcurrency": 0,
-            "Iterator": {
-              "StartAt": "Create Endpoint Config",
-              "States": {
-                "Create Endpoint Config": {
-                    "Type": "Task",
-                    "Resource": "arn:aws:states:::sagemaker:createEndpointConfig",
-                    "Parameters":{
-                      "EndpointConfigName.$": "$.EndpointName",
-                      "ProductionVariants": [ 
-                        { 
-                          "InitialInstanceCount": 1,
-                          "InstanceType": "$.InstanceType",
-                          "ModelName.$": "$.ModelName",
-                          "VariantName": "$.VariantName"
-                        }
-                      ]
-                    },
-                    "ResultPath":"$.taskresult",
-                    "Next":"Create Endpoint"
-                },
-                "Create Endpoint":{
-                    "Type":"Task",
-                    "Resource":"arn:aws:states:::sagemaker:createEndpoint",
-                    "Parameters":{
-                      "EndpointConfigName.$": "$.EndpointName",
-                      "EndpointName.$": "$.EndpointName"
-                    },
-                    "Next": "Test Response Time"
-                },
-                "Test Response Time": {
-                    "Type": "Task",
-                    "Resource": "arn:aws:states:::ecs:runTask.sync",
-                    "Parameters": {
-                        "Cluster": "$.JobDetails.ClusterName",
-                        "TaskDefinition": "$.JobDetails.TaskDefinition",
-                        "Overrides": {
-                            "ContainerOverrides": [
-                                {
-                                    "Name": "container-name",
-                                    "Command.$": "$.commands" 
-                                }
-                            ]
-                        }
-                    },
-                    "Next": "Clean-up"
-                },
-                "Clean-up": {
-                    "Type": "Task",
-                    "Resource": "arn:aws:lambda:::function:ml-serving-cleanup",
-                    "End": true
-                }
+  "StartAt": "Generate jobs",
+  "States": {
+      "Generate jobs": {
+          "Type": "Task",
+          "Resource": "arn:aws:lambda:::function:ml-serving-initialize",
+          "Catch":[
+              {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.Error",
+                  "Next": "Fail"
               }
-            },
-            "Catch":[
-                {
-                    "ErrorEquals":["States.ALL"],
-                    "ResultPath":"$.error",
-                    "Next":"Fail"
-                }
-            ],
-            "ResultPath": null,
-            "Next": "Recommend"
-        },
-        "Recommend": {
-            "Type": "Task",
-            "Resource": "arn:aws:lambda:::function:ml-serving-recommend",
-            "Next": "Success"
-        },
-        "Success": {
-            "Type": "Succeed"
-        },
-        "Fail": {
-            "Type": "Fail"
-        }
-    }
+          ],
+          "Next": "Response Time Analysis"
+      },
+      "Response Time Analysis": {
+          "Type": "Map",
+          "ItemsPath": "$.Jobs",
+          "MaxConcurrency": 0,
+          "Iterator": {
+            "StartAt": "Rate Limit Handling",
+            "States": {
+              "Rate Limit Handling": {
+                  "Type": "Wait",
+                  "SecondsPath": "$.WaitLimit",
+                  "Next": "Create Endpoint Config"
+              },
+              "Create Endpoint Config": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sagemaker:createEndpointConfig",
+                  "Parameters":{
+                    "EndpointConfigName.$": "$.EndpointName",
+                    "ProductionVariants": [ 
+                      { 
+                        "InitialInstanceCount": 1,
+                        "InstanceType.$": "$.InstanceDetails.instanceName",
+                        "ModelName.$": "$.ModelName",
+                        "VariantName.$": "$.VariantName"
+                      }
+                    ]
+                  },
+                  "ResultPath": null,
+                  "Next":"Create Endpoint"
+              },
+              "Create Endpoint":{
+                  "Type":"Task",
+                  "Resource":"arn:aws:states:::sagemaker:createEndpoint",
+                  "Parameters":{
+                    "EndpointConfigName.$": "$.EndpointName",
+                    "EndpointName.$": "$.EndpointName"
+                  },
+                  "ResultPath": null,
+                  "Next": "Get endpoint status"
+              },
+              "Get endpoint status":{
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:::function:ml-serving-status",
+                  "Next": "If Endpoint Ready"
+              },
+              "If Endpoint Ready": {
+                "Type": "Choice",
+                "Choices": [
+                  {
+                    "Variable": "$.EndpointStatus",
+                    "StringEquals": "InService",
+                    "Next": "Test Response Time"
+                  }
+                ],
+                "Default": "Wait 20s"
+              },
+              "Wait 20s": {
+                "Type": "Wait",
+                "Seconds": 20,
+                "Next": "Get endpoint status"
+              },
+              "Test Response Time": {
+                "Type": "Map",
+                "ItemsPath": "$.PerfSettings",
+                "MaxConcurrency": 1,
+                "Iterator": {
+                  "StartAt": "Execute Perf Jobs",
+                  "States": {
+                    "Execute Perf Jobs": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::ecs:runTask.sync",
+                        "Parameters": {
+                            "Cluster.$": "$.JobDetails.ClusterName",
+                            "LaunchType": "FARGATE",
+                            "TaskDefinition.$": "$.JobDetails.TaskDefinition",
+                            "Overrides": {
+                                "ContainerOverrides": [
+                                    {
+                                        "Name.$": "$.JobDetails.TaskName",
+                                        "Command.$": "$.JobDetails.Command",
+                                        "Environment": [
+                                          {
+                                            "Name": "AWS_REGION",
+                                            "Value.$": "$.JobDetails.AwsRegion"
+                                          },
+                                          {
+                                            "Name": "ENDPOINT_NAME",
+                                            "Value.$": "$.EndpointName"
+                                          },
+                                          {
+                                            "Name": "TEST_DATASET_BUCKET",
+                                            "Value.$": "$.TestDataset.Bucket"
+                                          },
+                                          {
+                                            "Name": "TEST_DATASET_KEY",
+                                            "Value.$": "$.TestDataset.Key"
+                                          }
+                                        ]
+                                    }
+                                ]
+                            },
+                            "NetworkConfiguration": {
+                                "AwsvpcConfiguration": {
+                                    "Subnets.$": "$.JobDetails.Subnets",
+                                    "AssignPublicIp": "ENABLED"
+                                }
+                            }
+                        },
+                        "ResultPath": null,
+                        "End": true
+                    }
+                  }
+                },
+                "ResultPath": null,
+                "Next": "Clean-up"
+              },
+              "Clean-up": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:::function:ml-serving-cleanup",
+                  "End": true
+              }
+            }
+          },
+          "Catch":[
+              {
+                  "ErrorEquals":["States.ALL"],
+                  "ResultPath":"$.error",
+                  "Next":"Fail"
+              }
+          ],
+          "ResultPath": null,
+          "Next": "Recommend"
+      },
+      "Recommend": {
+          "Type": "Task",
+          "Resource": "arn:aws:lambda:::function:ml-serving-recommend",
+          "Next": "Success"
+      },
+      "Success": {
+          "Type": "Succeed"
+      },
+      "Fail": {
+          "Type": "Fail"
+      }
   }
+}

@@ -1,6 +1,7 @@
 import boto3
 import json
 import math
+import os
 
 pricing = boto3.client("pricing", region_name=os.environ.get("PRICING_ENDPOINT", "ap-south-1"))
 

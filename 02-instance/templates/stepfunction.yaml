@@ -1,9 +1,43 @@
 AWSTemplateFormatVersion: 2010-09-09
 Parameters:
 
+  awsPricingLocation:
+    Type: String
+    Default: "Asia Pacific (Singapore)"
+
+  clusterName:
+    Type: String
+
   workflowName:
     Type: String
     Default: ml-serving-perf-test
+
+  perfTestBucket:
+    Type: String
+
+  pricingEndpoint:
+    Type: String
+
+  locustTaskDefinition:
+    Type: String
+
+  locustTaskName:
+    Type: String
+    Default: ml-serving-perf-test
+
+  lambdaPackage:
+    Type: String
+    Default: _lambdas/lambdas.zip
+
+  subnets:
+    Type: String
+
+  servingApiHost:
+    Type: String
+
+  servingApiEndpoint:
+    Type: String
+    Default: "/performance/"
 
 Resources:
 
@@ -11,70 +45,66 @@ Resources:
     Type: "AWS::Lambda::Function"
     Properties:
       Code:
-        S3Bucket: !Ref ArtifactBucket
-        S3Key: {{ LambdaCodeKey }}
+        S3Bucket: !Ref perfTestBucket
+        S3Key: !Ref lambdaPackage
       Description: "Prepare perf test jobs"
       FunctionName: ml-serving-initialize
       Handler: "initialize.handler"
-      MemorySize: 128
-      Role: !GetAtt [LambdaCFNRole, Arn]
+      MemorySize: 256
+      Role: !GetAtt [LambdaRole, Arn]
       Runtime: python3.8
       Timeout: 15
-      {% if AwsDeploymentRole is defined and AwsDeploymentRole != '' %}
       Environment:
         Variables:
-          ASSUME_ROLE_ARN: {{ AwsDeploymentRole }}
-      {% endif %}
-
-  GetStackStatusLambda:
-    Type: "AWS::Lambda::Function"
-    Properties:
-      Code:
-        S3Bucket: !Ref ArtifactBucket
-        S3Key: {{ LambdaCodeKey }}
-      Description: "Get status of CFN template"
-      FunctionName: !Sub "${StackPrefix}-deployer-core-get-status"
-      Handler: "status.handler"
-      MemorySize: 128
-      Role: !GetAtt [LambdaDeployerRole, Arn]
-      Runtime: python3.8
-      Timeout: 15
-      {% if AwsDeploymentRole is defined  and AwsDeploymentRole != '' %}
-      Environment:
-        Variables:
-          ASSUME_ROLE_ARN: {{ AwsDeploymentRole }}
-      {% endif %}
+          ECS_CLUSTER_NAME: !Ref clusterName
+          LOCUST_TASK_DEFINITION: !Ref locustTaskDefinition
+          LOCUST_TASK_NAME: !Ref locustTaskName
+          PERF_TEST_BUCKET: !Ref perfTestBucket
+          PRICING_LOCATION: !Ref awsPricingLocation
+          PRICING_ENDPOINT: !Ref pricingEndpoint
+          CLUSTER_SUBNETS: !Ref subnets
+          SERVING_API_HOST: !Ref servingApiHost
+          SERVING_API_ENDPOINT: !Ref servingApiEndpoint
 
   CleanupLambda:
     Type: "AWS::Lambda::Function"
     Properties:
       Code:
-        S3Bucket: !Ref ArtifactBucket
-        S3Key: {{ LambdaCodeKey }}
-      Description: "Delete failed stack"
-      FunctionName: !Sub "${StackPrefix}-deployer-core-cleanup"
+        S3Bucket: !Ref perfTestBucket
+        S3Key: !Ref lambdaPackage
+      Description: "Delete SageMaker resources"
+      FunctionName: ml-serving-cleanup
       Handler: "cleanup.handler"
       MemorySize: 128
-      Role: !GetAtt [LambdaCFNRole, Arn]
+      Role: !GetAtt [LambdaRole, Arn]
       Runtime: python3.8
       Timeout: 15
-      {% if AwsDeploymentRole is defined  and AwsDeploymentRole != '' %}
-      Environment:
-        Variables:
-          ASSUME_ROLE_ARN: {{ AwsDeploymentRole }}
-      {% endif %}
 
-  FailureLambda:
+  RecommendLambda:
     Type: "AWS::Lambda::Function"
     Properties:
       Code:
-        S3Bucket: !Ref ArtifactBucket
-        S3Key: {{ LambdaCodeKey }}
-      Description: "Gracefully fails"
-      FunctionName: !Sub "${StackPrefix}-deployer-core-failed"
-      Handler: "failed.handler"
+        S3Bucket: !Ref perfTestBucket
+        S3Key: !Ref lambdaPackage
+      Description: "Recommend based on perf test"
+      FunctionName: ml-serving-recommend
+      Handler: "recommend.handler"
       MemorySize: 128
-      Role: !GetAtt [LambdaDeployerRole, Arn]
+      Role: !GetAtt [LambdaRole, Arn]
+      Runtime: python3.8
+      Timeout: 15
+
+  StatusLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref perfTestBucket
+        S3Key: !Ref lambdaPackage
+      Description: "Check Endpoint Status"
+      FunctionName: ml-serving-status
+      Handler: "status.handler"
+      MemorySize: 128
+      Role: !GetAtt [LambdaRole, Arn]
       Runtime: python3.8
       Timeout: 15
 
@@ -104,8 +134,13 @@ Resources:
                   "ItemsPath": "$.Jobs",
                   "MaxConcurrency": 0,
                   "Iterator": {
-                    "StartAt": "Create Endpoint Config",
+                    "StartAt": "Rate Limit Handling",
                     "States": {
+                      "Rate Limit Handling": {
+                          "Type": "Wait",
+                          "SecondsPath": "$.WaitLimit",
+                          "Next": "Create Endpoint Config"
+                      },
                       "Create Endpoint Config": {
                           "Type": "Task",
                           "Resource": "arn:aws:states:::sagemaker:createEndpointConfig",
@@ -114,12 +149,13 @@ Resources:
                             "ProductionVariants": [ 
                               { 
                                 "InitialInstanceCount": 1,
-                                "InstanceType": "$.InstanceType",
+                                "InstanceType.$": "$.InstanceDetails.instanceName",
                                 "ModelName.$": "$.ModelName",
-                                "VariantName": "$.VariantName"
+                                "VariantName.$": "$.VariantName"
                               }
                             ]
                           },
+                          "ResultPath": null,
                           "Next":"Create Endpoint"
                       },
                       "Create Endpoint":{
@@ -129,24 +165,84 @@ Resources:
                             "EndpointConfigName.$": "$.EndpointName",
                             "EndpointName.$": "$.EndpointName"
                           },
-                          "Next": "Test Response Time"
+                          "ResultPath": null,
+                          "Next": "Get endpoint status"
+                      },
+                      "Get endpoint status":{
+                          "Type": "Task",
+                          "Resource": "arn:aws:lambda:::function:ml-serving-status",
+                          "Next": "If Endpoint Ready"
+                      },
+                      "If Endpoint Ready": {
+                        "Type": "Choice",
+                        "Choices": [
+                          {
+                            "Variable": "$.EndpointStatus",
+                            "StringEquals": "InService",
+                            "Next": "Test Response Time"
+                          }
+                        ],
+                        "Default": "Wait 20s"
+                      },
+                      "Wait 20s": {
+                        "Type": "Wait",
+                        "Seconds": 20,
+                        "Next": "Get endpoint status"
                       },
                       "Test Response Time": {
-                          "Type": "Task",
-                          "Resource": "arn:aws:states:::ecs:runTask.sync",
-                          "Parameters": {
-                              "Cluster": "$.JobDetails.ClusterName",
-                              "TaskDefinition": "$.JobDetails.TaskDefinition",
-                              "Overrides": {
-                                  "ContainerOverrides": [
-                                      {
-                                          "Name": "container-name",
-                                          "Command.$": "$.commands" 
-                                      }
-                                  ]
-                              }
-                          },
-                          "Next": "Clean-up"
+                        "Type": "Map",
+                        "ItemsPath": "$.PerfSettings",
+                        "MaxConcurrency": 1,
+                        "Iterator": {
+                          "StartAt": "Execute Perf Jobs",
+                          "States": {
+                            "Execute Perf Jobs": {
+                                "Type": "Task",
+                                "Resource": "arn:aws:states:::ecs:runTask.sync",
+                                "Parameters": {
+                                    "Cluster.$": "$.JobDetails.ClusterName",
+                                    "LaunchType": "FARGATE",
+                                    "TaskDefinition.$": "$.JobDetails.TaskDefinition",
+                                    "Overrides": {
+                                        "ContainerOverrides": [
+                                            {
+                                                "Name.$": "$.JobDetails.TaskName",
+                                                "Command.$": "$.JobDetails.Command",
+                                                "Environment": [
+                                                  {
+                                                    "Name": "AWS_REGION",
+                                                    "Value.$": "$.JobDetails.AwsRegion"
+                                                  },
+                                                  {
+                                                    "Name": "ENDPOINT_NAME",
+                                                    "Value.$": "$.EndpointName"
+                                                  },
+                                                  {
+                                                    "Name": "TEST_DATASET_BUCKET",
+                                                    "Value.$": "$.TestDataset.Bucket"
+                                                  },
+                                                  {
+                                                    "Name": "TEST_DATASET_KEY",
+                                                    "Value.$": "$.TestDataset.Key"
+                                                  }
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    "NetworkConfiguration": {
+                                        "AwsvpcConfiguration": {
+                                            "Subnets.$": "$.JobDetails.Subnets",
+                                            "AssignPublicIp": "ENABLED"
+                                        }
+                                    }
+                                },
+                                "ResultPath": null,
+                                "End": true
+                            }
+                          }
+                        },
+                        "ResultPath": null,
+                        "Next": "Clean-up"
                       },
                       "Clean-up": {
                           "Type": "Task",
@@ -196,7 +292,7 @@ Resources:
   StateMachineRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: 
+      RoleName: "ml-serving-stepfunction-role"
       AssumeRolePolicyDocument:
         Statement:
           - Action:
@@ -208,5 +304,125 @@ Resources:
         Version: "2012-10-17"
       Path: "/"
       ManagedPolicyArns: []
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'events:PutTargets'
+                  - 'events:PutRule'
+                  - 'events:DescribeRule'
+                Resource:
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule"
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForECSTaskRule"
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogDelivery'
+                  - 'logs:GetLogDelivery'
+                  - "logs:UpdateLogDelivery"
+                  - "logs:DeleteLogDelivery"
+                  - "logs:ListLogDeliveries"
+                  - "logs:PutResourcePolicy"
+                  - "logs:DescribeResourcePolicies"
+                  - "logs:DescribeLogGroups"
+                Resource:
+                  - "*"
+        - PolicyName: sagemaker
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:CreateEndpointConfig'
+                  - 'sagemaker:CreateEndpoint'
+                Resource:
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/perf-*"
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint-config/perf-*"
+        - PolicyName: lambda
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:ml-serving-*"
+        - PolicyName: ecs
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecs:DescribeTasks'
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action:
+                  - 'ecs:RunTask'
+                  - 'ecs:StopTask'
+                Resource:
+                  - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/ml-serving-perf-test:*"
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource:
+                  - "*"
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "ml-serving-lambda-role"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+        Version: "2012-10-17"
+      Path: "/"
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+        - PolicyName: sagemaker
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:DeleteEndpointConfig'
+                  - 'sagemaker:DeleteEndpoint'
+                  - 'sagemaker:DescribeEndpoint'
+                Resource:
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/perf-*"
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint-config/perf-*"
+        - PolicyName: pricing
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - pricing:GetProducts
+                Resource: '*'
+        - PolicyName: s3
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:List*'
+                  - 's3:GetBucketLocation'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${perfTestBucket}'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:HeadObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${perfTestBucket}/*'
 
   

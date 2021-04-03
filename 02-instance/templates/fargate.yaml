@@ -17,11 +17,29 @@ Parameters:
 
   perfTestImage:
     Type: String
-    Default: locust-perftest:latest
+    Default: latest
 
 
 Resources:
 
+  PerfTestBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref perfTestBucket
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - NoncurrentVersionExpirationInDays: 3
+            Status: Enabled
+
+  PerfTestECRRepo: 
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: !Ref ecrRepo
+    
   Cluster:
     Type: 'AWS::ECS::Cluster'
     Properties:
@@ -37,11 +55,12 @@ Resources:
       RequiresCompatibilities:
         - FARGATE
       ExecutionRoleArn: !Ref TaskExecutionRole
+      TaskRoleArn: !Ref TaskExecutionRole
       ContainerDefinitions:
         - Name: !Ref taskName
           Cpu: 256
           Memory: 512
-          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ecrRepo}/${perfTestImage}"
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ecrRepo}:${perfTestImage}"
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -80,7 +99,7 @@ Resources:
                   - 'ecr:GetDownloadUrlForLayer'
                   - 'ecr:BatchGetImage'
                 Resource: 
-                  - !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ecrRepo}/*"
+                  - !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ecrRepo}"
               - Effect: Allow
                 Action:
                   - 'ecr:GetAuthorizationToken'
