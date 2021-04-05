@@ -6,6 +6,7 @@ import json
 
 
 LOCATION = os.environ.get("PRICING_LOCATION", "Asia Pacific (Singapore)")
+DEFAULT_PERCENTILES = ["50", "66","75","80","90","95","99","999"]
 
 def fetch_instances(event):
     """Fetch SageMaker Instances and filter them to meet event criteria"""
@@ -54,6 +55,10 @@ def format_endpoints(event, instances):
 def format_jobs(event, endpoint_name, output_result_key):
     host = os.environ["SERVING_API_HOST"] + os.environ["SERVING_API_ENDPOINT"]
     jobs = []
+    if "Percentiles" not in event:
+        percentiles = ",".join(DEFAULT_PERCENTILES)
+    else:
+        percentiles = ",".join([str(x) for x in event['Percentiles']])
     for settings in event.get("Settings", [{}]):
         users = settings.get("Users", 5)
         spawn_rate = settings.get("SpawnRate", 5)
@@ -71,7 +76,7 @@ def format_jobs(event, endpoint_name, output_result_key):
                 "AwsRegion": os.environ["AWS_REGION"],
                 "Subnets": os.environ["CLUSTER_SUBNETS"].split(","),
                 "TaskName": os.environ["LOCUST_TASK_NAME"],
-                "Command": f"python3 driver.py -u {users} -r {spawn_rate} -t {test_time} -H {host} --output-bucket {os.environ['PERF_TEST_BUCKET']} --output-key {output_result_key}".split(" ")
+                "Command": f"python3 driver.py -u {users} -r {spawn_rate} -t {test_time} -H {host} --output-bucket {os.environ['PERF_TEST_BUCKET']} --output-key {output_result_key} --percentiles {percentiles}".split(" ")
             }
         })
 
