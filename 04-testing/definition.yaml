@@ -1,0 +1,21 @@
+- endpoint: /dsfsdf/dsfsdf
+  method: ddfs
+  headers:
+    Content-Type: dfdfg
+  schema:
+    ssdf: sdfsdf
+  tests:
+    - headers:
+        dfsdf: sdfsdf
+      method: sdf
+      data:
+        ssdf: sdfsdf
+      response:
+        code: xxx
+        headers:
+          dsf: sdfsdf
+        schema:
+          dfsdf: sdfsdf
+        assert:
+          dfsdf: dsfsdf
+        
