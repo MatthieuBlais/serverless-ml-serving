@@ -1,21 +1,46 @@
-- endpoint: /dsfsdf/dsfsdf
-  method: ddfs
+- endpoint: /dev/sentiments/tweet
+  method: post
   headers:
-    Content-Type: dfdfg
+    Content-Type: application/json
   schema:
-    ssdf: sdfsdf
+    type: object
+    properties:
+      sentiments:
+        type: object
+        properties:
+          label:
+            type: string
+          score:
+            type: number
   tests:
-    - headers:
-        dfsdf: sdfsdf
-      method: sdf
-      data:
-        ssdf: sdfsdf
+    # - headers:
+    #     dfsdf: sdfsdf
+    #   method: sdf
+    #   data:
+    #     ssdf: sdfsdf
+    #   response:
+    #     code: xxx
+    #     headers:
+    #       dsf: sdfsdf
+    #     schema:
+    #       dfsdf: sdfsdf
+    #     body:
+    #       dfsdf: dsfsdf
+    - data:
+        tweet: "What better way to relax over a nice meal and a bottle of your favorite wine?"
       response:
-        code: xxx
+        code: 200
         headers:
-          dsf: sdfsdf
-        schema:
-          dfsdf: sdfsdf
-        assert:
-          dfsdf: dsfsdf
-        
+          Content-Type: application/json
+        body:
+          sentiments:
+            label: positive
+    - data:
+        tweet: "What better way to relax over a nice meal and a bottle of your favorite wine?"
+      response:
+        code: 200
+        headers:
+          Content-Type: application/json
+        body:
+          sentiments:
+            label: positive
