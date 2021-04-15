@@ -1,30 +1,30 @@
-usecase1:
-  dataset:
-    bucket: mybucket
-    key: mykey
-  scaling:
-    maxInstance: 5
-    defaultInstance: 2
-  metrics:
-    maxResponseRate: 234
-    percentile: 50
-    defaultUsers: 50
-    maxUsers: 5000
-  load:
-    - duration: 49m
-      users: 39000
-      spawn: 3
-    - duration: 49m
-      users: 39000
-      spawn: 3
-    - duration: 49m
-      users: 39000
-      spawn: 3
-    - duration: 49m
-      users: 39000
-      spawn: 3
-    - duration: 49m
-      users: 39000
-      spawn: 3
+jobs:
+  - dataset:
+      bucket: mybucket
+      key: mykey
+    endpoint:
+      instanceType: c5.xlarge
+      defaultInstance: 2
+      rps: 10
+      safetyFactor: 30
+    scaling:
+      maxResponseRate: 234
+      percentiles: "50"
+    shape:
+      - duration: 49m
+        users: 39000
+        spawn: 3
+      - duration: 49m
+        users: 39000
+        spawn: 3
+      - duration: 49m
+        users: 39000
+        spawn: 3
+      - duration: 49m
+        users: 39000
+        spawn: 3
+      - duration: 49m
+        users: 39000
+        spawn: 3
   
     

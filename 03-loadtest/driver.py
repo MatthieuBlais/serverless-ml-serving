@@ -98,4 +98,4 @@ if __name__ == "__main__":
     load_testing(args.run_time, args.host, args.output_bucket, args.output_key, args.percentiles)
 
 
-# python driver.py --users 5 --spawn-rate 5 --run-time 20 --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com 
+# python driver.py --run-time 20 --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com 
