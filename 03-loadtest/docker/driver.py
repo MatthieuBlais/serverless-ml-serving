@@ -53,7 +53,12 @@ def load_testing(run_time, host, output_bucket=None, output_key=None, percentile
     # setup Environment and Runner
     env = Environment(user_classes=[APIInterface], shape_class=StagesShape())
     env.host = host
-    env.create_local_runner()
+    if os.environ["LOCUST_MODE"] == "MASTER":
+        env.create_master_runner()
+    elif os.environ["LOCUST_MODE"] == "SLAVE":
+        env.create_worker_runner(os.environ["MASTER_HOST"], int(os.environ["MASTER_PORT"]))
+    else:
+        env.create_local_runner()
 
     # start a greenlet that periodically outputs the current stats
     gevent.spawn(stats_printer(env.stats))
@@ -70,20 +75,21 @@ def load_testing(run_time, host, output_bucket=None, output_key=None, percentile
     # wait for the greenlets
     env.runner.greenlet.join()
 
-    results = {
-        "time": datetime.datetime.now().strftime("%H:%M:%S"),
-        "min_response_time": env.stats.total.min_response_time,
-        "max_response_time": env.stats.total.max_response_time,
-        "num_requests": env.stats.total.num_requests,
-        "history": env.stats.history
-    }
-    for percentile in percentiles.split(","):
-        pvalue = float(percentile) / (10**len(percentile))
-        results[f"response_time_percentile_{percentile}"] = env.stats.total.get_current_response_time_percentile(pvalue) or 0
+    if os.environ["LOCUST_MODE"] != "SLAVE":
+        results = {
+            "time": datetime.datetime.now().strftime("%H:%M:%S"),
+            "min_response_time": env.stats.total.min_response_time,
+            "max_response_time": env.stats.total.max_response_time,
+            "num_requests": env.stats.total.num_requests,
+            "history": env.stats.history
+        }
+        for percentile in percentiles.split(","):
+            pvalue = float(percentile) / (10**len(percentile))
+            results[f"response_time_percentile_{percentile}"] = env.stats.total.get_current_response_time_percentile(pvalue) or 0
 
-    print(results)
-    if output_bucket:
-        save_results(output_bucket, output_key, results)
+        print(results)
+        if output_bucket:
+            save_results(output_bucket, output_key, results)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -98,4 +104,8 @@ if __name__ == "__main__":
     load_testing(args.run_time, args.host, args.output_bucket, args.output_key, args.percentiles)
 
 
-# python driver.py --run-time 20 --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com 
+# python driver.py --run-time 70 --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com 
+
+
+# docker run -p 5557:5557 -e LOCUST_MODE=MASTER -it loadtest python driver.py --run-time 70 --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com
+# docker run -e LOCUST_MODE=SLAVE -e MASTER_HOST=127.0.0.1 -e MASTER_PORT=5557 --network="host" -it loadtest python driver.py --run-time 70 --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com
