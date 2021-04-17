@@ -102,10 +102,3 @@ if __name__ == "__main__":
 
     print(f"Configuration: run-time={args.run_time}, host={args.host}, output=s3://{args.output_bucket}/{args.output_key}, percentiles={args.percentiles}")
     load_testing(args.run_time, args.host, args.output_bucket, args.output_key, args.percentiles)
-
-
-# python driver.py --run-time 70 --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com 
-
-
-# docker run -p 5557:5557 -e LOCUST_MODE=MASTER -it loadtest python driver.py --run-time 70 --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com
-# docker run -e LOCUST_MODE=SLAVE -e MASTER_HOST=127.0.0.1 -e MASTER_PORT=5557 --network="host" -it loadtest python driver.py --run-time 70 --host https://uoykcmsezg.execute-api.ap-southeast-1.amazonaws.com
