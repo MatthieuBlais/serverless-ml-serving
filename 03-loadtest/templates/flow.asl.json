@@ -79,47 +79,101 @@
                     "Next": "Execute Load Testing"
                 },
                 "Execute Load Testing": {
-                    "Type": "Task",
-                    "Resource": "arn:aws:states:::ecs:runTask.sync",
-                    "Parameters": {
-                        "Cluster.$": "$.JobDetails.ClusterName",
-                        "LaunchType": "FARGATE",
-                        "TaskDefinition.$": "$.JobDetails.TaskDefinition",
-                        "Overrides": {
-                            "ContainerOverrides": [
-                                {
-                                    "Name.$": "$.JobDetails.TaskName",
-                                    "Command.$": "$.JobDetails.Command",
-                                    "Environment": [
-                                      {
-                                        "Name": "AWS_REGION",
-                                        "Value.$": "$.JobDetails.AwsRegion"
-                                      },
-                                      {
-                                        "Name": "ENDPOINT_NAME",
-                                        "Value.$": "$.EndpointName"
-                                      },
-                                      {
-                                        "Name": "TEST_DATASET_BUCKET",
-                                        "Value.$": "$.TestDataset.Bucket"
-                                      },
-                                      {
-                                        "Name": "TEST_DATASET_KEY",
-                                        "Value.$": "$.TestDataset.Key"
-                                      }
+                    "Type": "Parallel",
+                    "Next": "Clean-up",
+                    "Branches": [
+                      {
+                       "StartAt": "Execute Master Node",
+                       "States": {
+                        "Execute Master Node": {
+                            "Type": "Task",
+                            "Resource": "arn:aws:states:::ecs:runTask.sync",
+                            "Parameters": {
+                                "Cluster.$": "$.JobDetails.ClusterName",
+                                "LaunchType": "FARGATE",
+                                "TaskDefinition.$": "$.JobDetails.TaskDefinition",
+                                "Overrides": {
+                                    "ContainerOverrides": [
+                                        {
+                                            "Name.$": "$.JobDetails.TaskName",
+                                            "Command.$": "$.JobDetails.Command",
+                                            "Environment": [
+                                              {
+                                                "Name": "AWS_REGION",
+                                                "Value.$": "$.JobDetails.AwsRegion"
+                                              },
+                                              {
+                                                "Name": "ENDPOINT_NAME",
+                                                "Value.$": "$.EndpointName"
+                                              },
+                                              {
+                                                "Name": "TEST_DATASET_BUCKET",
+                                                "Value.$": "$.TestDataset.Bucket"
+                                              },
+                                              {
+                                                "Name": "TEST_DATASET_KEY",
+                                                "Value.$": "$.TestDataset.Key"
+                                              }
+                                            ]
+                                        }
                                     ]
+                                },
+                                "NetworkConfiguration": {
+                                    "AwsvpcConfiguration": {
+                                        "Subnets.$": "$.JobDetails.Subnets",
+                                        "AssignPublicIp": "ENABLED"
+                                    }
                                 }
-                            ]
-                        },
-                        "NetworkConfiguration": {
-                            "AwsvpcConfiguration": {
-                                "Subnets.$": "$.JobDetails.Subnets",
-                                "AssignPublicIp": "ENABLED"
-                            }
-                        }
-                    },
-                    "ResultPath": null,
-                    "Next": "Clean-up"
+                            },
+                            "ResultPath": null,
+                            "End": true
+                          }
+                       }
+                     },
+                     {
+                       "StartAt": "Get Master status",
+                       "States": {
+                         "Get Master status": {
+                           "Type": "Task",
+                           "Resource":
+                             "arn:aws:lambda:us-east-1:123456789012:function:PhoneFinder",
+                           "Next": "If Master Ready"
+                         },
+                         "If Master Ready": {
+                            "Type": "Choice",
+                            "Choices": [
+                              {
+                                "Variable": "$.MasterStatus",
+                                "StringEquals": "InService",
+                                "Next": "Start Workers"
+                              }
+                            ],
+                            "Default": "Wait For Master"
+                         },
+                         "Wait For Master": {
+                            "Type": "Wait",
+                            "Seconds": 30,
+                            "Next": "Get Master status"
+                          },
+                          "Start Workers": {
+                            "Type": "Map",
+                            "ItemsPath": "$.Jobs",
+                            "MaxConcurrency": 0,
+                            "Iterator": {
+                              "StartAt": "Start Worker",
+                              "States": {
+                                "Start Worker": {
+                                    "Type": "Wait",
+                                    "SecondsPath": "$.WaitLimit",
+                                    "End": true
+                                }
+                              }
+                            },
+                            "End": true
+                          }
+                       }
+                     }
+                    ]
                 },
                 "Clean-up": {
                     "Type": "Task",
