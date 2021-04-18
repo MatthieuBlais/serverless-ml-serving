@@ -123,6 +123,15 @@ Resources:
                 Action:
                   - 'ecr:GetAuthorizationToken'
                 Resource: '*'
+        - PolicyName: ecs
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecs:ListTasks'
+                  - 'ecs:DescribeTasks'
+                Resource: 
+                  - '*'
         - PolicyName: s3
           PolicyDocument:
             Statement:
