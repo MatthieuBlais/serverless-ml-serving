@@ -1,0 +1,446 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+
+  clusterName:
+    Type: String
+
+  workflowName:
+    Type: String
+    Default: ml-serving-loadtesting
+
+  loadTestBucket:
+    Type: String
+
+  locustTaskDefinition:
+    Type: String
+
+  locustTaskName:
+    Type: String
+    Default: locust-load-test
+
+  locustFamilyName:
+    Type: String
+    Default: locust-load-test
+
+  lambdaPackage:
+    Type: String
+    Default: _lambdas/loadtest.zip
+
+  servingApiHost:
+    Type: String
+
+  servingApiEndpoint:
+    Type: String
+    Default: /performance/
+
+  securityGroups:
+    Type: String
+    Default: sg-01044b90c2c0ad58e
+
+  subnets:
+    Type: String
+    Default: subnet-55476b32,subnet-7581dc3c
+
+Resources:
+
+  Initialize:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref loadTestBucket
+        S3Key: !Ref lambdaPackage
+      Description: "Prepare load testing"
+      FunctionName: ml-serving-loadtesting-initialize
+      Handler: "initialize.handler"
+      MemorySize: 512
+      Role: !GetAtt [LambdaRole, Arn]
+      Runtime: python3.8
+      Timeout: 30
+      Environment:
+        Variables:
+          ECS_CLUSTER_NAME: !Ref clusterName
+          LOCUST_TASK_DEFINITION: !Ref locustTaskDefinition
+          LOCUST_TASK_NAME: !Ref locustTaskName
+          LOAD_TEST_BUCKET: !Ref loadTestBucket
+          LOCUST_FAMILY_NAME: !Ref locustFamilyName
+          SERVING_API_HOST: !Ref pricingEndpoint
+          CLUSTER_SUBNETS: !Ref subnets
+          CLUSTER_SECURITY_GROUPS: !Ref securityGroups
+          SERVING_API_HOST: !Ref servingApiHost
+          SERVING_API_ENDPOINT: !Ref servingApiEndpoint
+
+  EndpointStatus:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref loadTestBucket
+        S3Key: !Ref lambdaPackage
+      Description: "Check if endpoint is ready"
+      FunctionName: ml-serving-loadtesting-status
+      Handler: "endpointstatus.handler"
+      MemorySize: 512
+      Role: !GetAtt [LambdaRole, Arn]
+      Runtime: python3.8
+      Timeout: 30
+
+  ScalingPolicy:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref loadTestBucket
+        S3Key: !Ref lambdaPackage
+      Description: "Create a scaling policy for endpoint"
+      FunctionName: ml-serving-loadtesting-scaling
+      Handler: "scalingpolicy.handler"
+      MemorySize: 512
+      Role: !GetAtt [LambdaRole, Arn]
+      Runtime: python3.8
+      Timeout: 30
+
+  Cleanup:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref loadTestBucket
+        S3Key: !Ref lambdaPackage
+      Description: "Delete resources used for load testing"
+      FunctionName: ml-serving-loadtesting-cleanup
+      Handler: "cleanup.handler"
+      MemorySize: 512
+      Role: !GetAtt [LambdaRole, Arn]
+      Runtime: python3.8
+      Timeout: 30
+
+  Recommend:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        S3Bucket: !Ref loadTestBucket
+        S3Key: !Ref lambdaPackage
+      Description: "Analyze results"
+      FunctionName: ml-serving-loadtesting-recommend
+      Handler: "recommend.handler"
+      MemorySize: 1024
+      Role: !GetAtt [LambdaRole, Arn]
+      Runtime: python3.8
+      Timeout: 30
+
+  StateMachineWorkflow:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn: LogGroup
+    Properties:
+      StateMachineName: !Ref workflowName
+      DefinitionString: |-
+        {
+          "StartAt": "Initialize",
+          "States": {
+              "Initialize": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-initialize",
+                  "Catch":[
+                      {
+                          "ErrorEquals": ["States.ALL"],
+                          "ResultPath": "$.Error",
+                          "Next": "Fail"
+                      }
+                  ],
+                  "Next": "Load Testing Analysis"
+              },
+              "Load Testing Analysis": {
+                  "Type": "Map",
+                  "ItemsPath": "$.Jobs",
+                  "MaxConcurrency": 0,
+                  "Iterator": {
+                    "StartAt": "Rate Limit Handling",
+                    "States": {
+                      "Rate Limit Handling": {
+                          "Type": "Wait",
+                          "SecondsPath": "$.WaitLimit",
+                          "Next": "Create Endpoint Config"
+                      },
+                      "Create Endpoint Config": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:states:::sagemaker:createEndpointConfig",
+                          "Parameters":{
+                            "EndpointConfigName.$": "$.EndpointName",
+                            "ProductionVariants": [ 
+                              { 
+                                "InitialInstanceCount.$": "$.InstanceCount",
+                                "InstanceType.$": "$.InstanceType",
+                                "ModelName.$": "$.ModelName",
+                                "VariantName.$": "$.VariantName"
+                              }
+                            ]
+                          },
+                          "ResultPath": null,
+                          "Next":"Create Endpoint"
+                      },
+                      "Create Endpoint":{
+                          "Type":"Task",
+                          "Resource":"arn:aws:states:::sagemaker:createEndpoint",
+                          "Parameters":{
+                            "EndpointConfigName.$": "$.EndpointName",
+                            "EndpointName.$": "$.EndpointName"
+                          },
+                          "ResultPath": null,
+                          "Next": "Wait for Endpoint"
+                      },
+                      "Wait for Endpoint": {
+                          "Type": "Wait",
+                          "Seconds": 20,
+                          "Next": "Get endpoint status"
+                      },
+                      "Get endpoint status":{
+                          "Type": "Task",
+                          "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-status",
+                          "Next": "If Endpoint Ready"
+                      },
+                      "If Endpoint Ready": {
+                        "Type": "Choice",
+                        "Choices": [
+                          {
+                            "Variable": "$.EndpointStatus",
+                            "StringEquals": "InService",
+                            "Next": "Create Scaling Policy"
+                          }
+                        ],
+                        "Default": "Wait for Endpoint"
+                      },
+                      "Create Scaling Policy":{
+                          "Type": "Task",
+                          "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-scaling",
+                          "Next": "Execute Load Testing"
+                      },
+                      "Execute Load Testing": {
+                          "Type": "Task",
+                          "Resource":"arn:aws:states:::states:startExecution.sync",
+                          "Parameters":{  
+                              "StateMachineArn":"arn:aws:states:ap-southeast-1:908177370303:stateMachine:ml-serving-distributed-locust",
+                              "Input.$": "$"
+                          },
+                          "ResultPath": null,
+                          "Next":"Wait if Endpoint is Updating"
+                      },
+                      "Wait if Endpoint is Updating": {
+                          "Type": "Wait",
+                          "Seconds": 20,
+                          "Next": "Get new endpoint status"
+                      },
+                      "Get new endpoint status":{
+                          "Type": "Task",
+                          "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-status",
+                          "Next": "If Endpoint InService"
+                      },
+                      "If Endpoint InService": {
+                        "Type": "Choice",
+                        "Choices": [
+                          {
+                            "Variable": "$.EndpointStatus",
+                            "StringEquals": "InService",
+                            "Next": "Clean-up"
+                          }
+                        ],
+                        "Default": "Wait if Endpoint is Updating"
+                      },
+                      "Clean-up": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-cleanup",
+                          "End": true
+                      }
+                    }
+                  },
+                  "Catch":[
+                      {
+                          "ErrorEquals":["States.ALL"],
+                          "ResultPath":"$.error",
+                          "Next":"Fail"
+                      }
+                  ],
+                  "ResultPath": null,
+                  "Next": "Recommend"
+              },
+              "Recommend": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-recommend",
+                  "Next": "Success"
+              },
+              "Success": {
+                  "Type": "Succeed"
+              },
+              "Fail": {
+                  "Type": "Fail"
+              }
+          }
+        }
+      RoleArn: !GetAtt "StateMachineRole.Arn"
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+        - CloudWatchLogsLogGroup:
+            LogGroupArn: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/${workflowName}:*"
+        IncludeExecutionData: True
+        Level: "ALL"
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/vendedlogs/states/${workflowName}"
+      RetentionInDays: 7
+
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "ml-serving-loadtesting-stepfunction-role"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+        Version: "2012-10-17"
+      Path: "/"
+      ManagedPolicyArns: []
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'events:PutTargets'
+                  - 'events:PutRule'
+                  - 'events:DescribeRule'
+                Resource:
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule"
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForECSTaskRule"
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogDelivery'
+                  - 'logs:GetLogDelivery'
+                  - "logs:UpdateLogDelivery"
+                  - "logs:DeleteLogDelivery"
+                  - "logs:ListLogDeliveries"
+                  - "logs:PutResourcePolicy"
+                  - "logs:DescribeResourcePolicies"
+                  - "logs:DescribeLogGroups"
+                Resource:
+                  - "*"
+        - PolicyName: sagemaker
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:CreateEndpointConfig'
+                  - 'sagemaker:CreateEndpoint'
+                Resource:
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/loadtesting-*"
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint-config/loadtesting-*"
+        - PolicyName: lambda
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:ml-serving-*"
+        - PolicyName: sf
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:DescribeExecution'
+                  - 'states:DescribeStateMachineForExecution'
+                  - 'states:GetExecutionHistory'
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                  - 'states:StopExecution'
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:ml-serving-*"
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource:
+                  - "*"
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "ml-serving-loadtesting-lambda-role"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+        Version: "2012-10-17"
+      Path: "/"
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+        - PolicyName: sagemaker
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:DeleteEndpointConfig'
+                  - 'sagemaker:DeleteEndpoint'
+                  - 'sagemaker:DescribeEndpoint'
+                Resource:
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/loadtesting-*"
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint-config/loadtesting-*"
+        - PolicyName: asg
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'application-autoscaling:PutScalingPolicy'
+                  - 'application-autoscaling:DeleteScalingPolicy'
+                  - 'application-autoscaling:RegisterScalableTarget'
+                  - 'application-autoscaling:DeregisterScalableTarget'
+                Resource:
+                  - "*" # Can't use specific resources
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:PutMetricAlarm'
+                  - 'cloudwatch:DeleteAlarms'
+                  - 'cloudwatch:DescribeAlarms'
+                  - 'sagemaker:DescribeEndpointConfig'
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:UpdateEndpointWeightsAndCapacities'
+                Resource:
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/loadtesting-*"
+                  - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint-config/loadtesting-*"
+        - PolicyName: s3
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:List*'
+                  - 's3:GetBucketLocation'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${loadTestBucket}'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:HeadObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${loadTestBucket}/*'
+
+  

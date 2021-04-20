@@ -1,9 +1,9 @@
 {
-    "StartAt": "Generate jobs",
+    "StartAt": "Initialize",
     "States": {
-        "Generate jobs": {
+        "Initialize": {
             "Type": "Task",
-            "Resource": "arn:aws:lambda:::function:ml-loadtesting-initialize",
+            "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-initialize",
             "Catch":[
                 {
                     "ErrorEquals": ["States.ALL"],
@@ -32,7 +32,7 @@
                       "EndpointConfigName.$": "$.EndpointName",
                       "ProductionVariants": [ 
                         { 
-                          "InitialInstanceCount": "$.InstanceCount",
+                          "InitialInstanceCount.$": "$.InstanceCount",
                           "InstanceType.$": "$.InstanceType",
                           "ModelName.$": "$.ModelName",
                           "VariantName.$": "$.VariantName"
@@ -50,11 +50,16 @@
                       "EndpointName.$": "$.EndpointName"
                     },
                     "ResultPath": null,
+                    "Next": "Wait for Endpoint"
+                },
+                "Wait for Endpoint": {
+                    "Type": "Wait",
+                    "Seconds": 20,
                     "Next": "Get endpoint status"
                 },
                 "Get endpoint status":{
                     "Type": "Task",
-                    "Resource": "arn:aws:lambda:::function:ml-serving-status",
+                    "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-status",
                     "Next": "If Endpoint Ready"
                 },
                 "If Endpoint Ready": {
@@ -66,118 +71,47 @@
                       "Next": "Create Scaling Policy"
                     }
                   ],
-                  "Default": "Wait 20s"
-                },
-                "Wait 20s": {
-                  "Type": "Wait",
-                  "Seconds": 20,
-                  "Next": "Get endpoint status"
+                  "Default": "Wait for Endpoint"
                 },
                 "Create Scaling Policy":{
                     "Type": "Task",
-                    "Resource": "arn:aws:lambda:::function:ml-serving-status",
+                    "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-scaling",
                     "Next": "Execute Load Testing"
                 },
                 "Execute Load Testing": {
-                    "Type": "Parallel",
-                    "Next": "Clean-up",
-                    "Branches": [
-                      {
-                       "StartAt": "Execute Master Node",
-                       "States": {
-                        "Execute Master Node": {
-                            "Type": "Task",
-                            "Resource": "arn:aws:states:::ecs:runTask.sync",
-                            "Parameters": {
-                                "Cluster.$": "$.JobDetails.ClusterName",
-                                "LaunchType": "FARGATE",
-                                "TaskDefinition.$": "$.JobDetails.TaskDefinition",
-                                "Overrides": {
-                                    "ContainerOverrides": [
-                                        {
-                                            "Name.$": "$.JobDetails.TaskName",
-                                            "Command.$": "$.JobDetails.Command",
-                                            "Environment": [
-                                              {
-                                                "Name": "AWS_REGION",
-                                                "Value.$": "$.JobDetails.AwsRegion"
-                                              },
-                                              {
-                                                "Name": "ENDPOINT_NAME",
-                                                "Value.$": "$.EndpointName"
-                                              },
-                                              {
-                                                "Name": "TEST_DATASET_BUCKET",
-                                                "Value.$": "$.TestDataset.Bucket"
-                                              },
-                                              {
-                                                "Name": "TEST_DATASET_KEY",
-                                                "Value.$": "$.TestDataset.Key"
-                                              }
-                                            ]
-                                        }
-                                    ]
-                                },
-                                "NetworkConfiguration": {
-                                    "AwsvpcConfiguration": {
-                                        "Subnets.$": "$.JobDetails.Subnets",
-                                        "AssignPublicIp": "ENABLED"
-                                    }
-                                }
-                            },
-                            "ResultPath": null,
-                            "End": true
-                          }
-                       }
-                     },
-                     {
-                       "StartAt": "Get Master status",
-                       "States": {
-                         "Get Master status": {
-                           "Type": "Task",
-                           "Resource":
-                             "arn:aws:lambda:us-east-1:123456789012:function:PhoneFinder",
-                           "Next": "If Master Ready"
-                         },
-                         "If Master Ready": {
-                            "Type": "Choice",
-                            "Choices": [
-                              {
-                                "Variable": "$.MasterStatus",
-                                "StringEquals": "InService",
-                                "Next": "Start Workers"
-                              }
-                            ],
-                            "Default": "Wait For Master"
-                         },
-                         "Wait For Master": {
-                            "Type": "Wait",
-                            "Seconds": 30,
-                            "Next": "Get Master status"
-                          },
-                          "Start Workers": {
-                            "Type": "Map",
-                            "ItemsPath": "$.Jobs",
-                            "MaxConcurrency": 0,
-                            "Iterator": {
-                              "StartAt": "Start Worker",
-                              "States": {
-                                "Start Worker": {
-                                    "Type": "Wait",
-                                    "SecondsPath": "$.WaitLimit",
-                                    "End": true
-                                }
-                              }
-                            },
-                            "End": true
-                          }
-                       }
-                     }
-                    ]
+                    "Type": "Task",
+                    "Resource":"arn:aws:states:::states:startExecution.sync",
+                    "Parameters":{  
+                        "StateMachineArn":"arn:aws:states:ap-southeast-1:908177370303:stateMachine:ml-serving-distributed-locust",
+                        "Input.$": "$"
+                    },
+                    "ResultPath": null,
+                    "Next":"Wait if Endpoint is Updating"
+                },
+                "Wait if Endpoint is Updating": {
+                    "Type": "Wait",
+                    "Seconds": 20,
+                    "Next": "Get new endpoint status"
+                },
+                "Get new endpoint status":{
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-status",
+                    "Next": "If Endpoint InService"
+                },
+                "If Endpoint InService": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.EndpointStatus",
+                      "StringEquals": "InService",
+                      "Next": "Clean-up"
+                    }
+                  ],
+                  "Default": "Wait if Endpoint is Updating"
                 },
                 "Clean-up": {
                     "Type": "Task",
-                    "Resource": "arn:aws:lambda:::function:ml-serving-cleanup",
+                    "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-cleanup",
                     "End": true
                 }
               }
@@ -194,7 +128,7 @@
         },
         "Recommend": {
             "Type": "Task",
-            "Resource": "arn:aws:lambda:::function:ml-serving-recommend",
+            "Resource": "arn:aws:lambda:::function:ml-serving-loadtesting-recommend",
             "Next": "Success"
         },
         "Success": {

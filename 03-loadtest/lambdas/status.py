@@ -4,10 +4,12 @@ import json
 
 client = boto3.client('ecs', region_name=os.environ.get("AWS_REGION", "ap-southeast-1"))
 
-def filter_tasks(tasks, searched_task_name):
+def filter_tasks(tasks, task_name, execution_id):
     for task in tasks:
-        if task['overrides']['containerOverrides'][0]['name'] == searched_task_name:
-            return task
+        if task['overrides']['containerOverrides'][0]['name'] == task_name:
+            for env in task['overrides']['containerOverrides'][0]['environment']:
+                if env['name'] == 'EXECUTION_ID' and env['value'] == execution_id:
+                    return task
     return None
 
 def extract_private_ip(task):
@@ -17,6 +19,17 @@ def extract_private_ip(task):
                 if det['name'] == 'privateIPv4Address':
                     return det['value']
     return None
+
+def inject_attributes_in_workers(workers, ip_address, task_arn):
+    params = [
+        "--master-host",
+        ip_address,
+        "--fargate-task",
+        task_arn
+    ]
+    for i in range(len(workers)):
+        workers[i]["WorkerCommand"] += params
+    return workers
 
 def handler(event, context):
 
@@ -41,8 +54,8 @@ def handler(event, context):
             cluster=event["JobDetails"]["ClusterName"],
             tasks=response['taskArns']
         )
-        task = filter_tasks(task_descriptions['tasks'], event["JobDetails"]["TaskName"])
-
+        task = filter_tasks(task_descriptions['tasks'], event["JobDetails"]["MasterTaskName"], event["JobDetails"]["ExecutionId"])
+        print(task)
         if task is None and not response.get("nextToken"):
             event['MasterStatus'] = 'STOPPED'
             loop = False
@@ -50,17 +63,20 @@ def handler(event, context):
             event["MasterStatus"] = task['lastStatus']
             event['MasterTaskArn'] = task['taskArn']
             event['MasterPrivateIp'] = extract_private_ip(task)
+            event['Jobs'] = inject_attributes_in_workers(event['Jobs'], event['MasterPrivateIp'], event['MasterTaskArn'])
             loop = False
 
     return event
         
 
 
-event = {
-    "JobDetails": {
-        "ClusterName": "ml-serving",
-        "FamilyName": "locust-load-test",
-        "TaskName": "locust-load-test"
-    }
-}
-print(handler(event, {}))
+# event = {
+#     "JobDetails": {
+#         "ExecutionId": "ddd",
+#         "ClusterName": "ml-serving",
+#         "FamilyName": "locust-load-test",
+#         "MasterTaskName": "locust-load-test",
+#         "Jobs": []
+#     }
+# }
+# print(handler(event, {}))

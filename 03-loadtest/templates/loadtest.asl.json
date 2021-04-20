@@ -18,9 +18,13 @@
                         "Overrides": {
                             "ContainerOverrides": [
                                 {
-                                    "Name.$": "$.JobDetails.TaskName",
-                                    "Command.$": "$.MasterCommand",
+                                    "Name.$": "$.JobDetails.MasterTaskName",
+                                    "Command.$": "$.JobDetails.MasterCommand",
                                     "Environment": [
+                                      {
+                                        "Name": "EXECUTION_ID",
+                                        "Value.$": "$.JobDetails.ExecutionId"
+                                      },
                                       {
                                         "Name": "AWS_REGION",
                                         "Value.$": "$.JobDetails.AwsRegion"
@@ -44,6 +48,7 @@
                         "NetworkConfiguration": {
                             "AwsvpcConfiguration": {
                                 "Subnets.$": "$.JobDetails.Subnets",
+                                "SecurityGroups.$": "$.JobDetails.SecurityGroups",
                                 "AssignPublicIp": "ENABLED"
                             }
                         }
@@ -54,12 +59,17 @@
                }
              },
              {
-               "StartAt": "Get Master status",
+               "StartAt": "Wait For Master Node",
                "States": {
+                "Wait For Master Node": {
+                    "Type": "Wait",
+                    "Seconds": 30,
+                    "Next": "Get Master status"
+                  },
                  "Get Master status": {
                    "Type": "Task",
                    "Resource":
-                     "arn:aws:lambda:us-east-1:123456789012:function:PhoneFinder",
+                     "arn:aws:lambda:::function:ml-serving-locust-master-status",
                    "Next": "If Master Ready"
                  },
                  "If Master Ready": {
@@ -81,11 +91,6 @@
                  "Master Failure": {
                    "Type": "Fail"
                  },
-                 "Wait For Master Node": {
-                    "Type": "Wait",
-                    "Seconds": 30,
-                    "Next": "Get Master status"
-                  },
                   "Start Workers": {
                     "Type": "Map",
                     "ItemsPath": "$.Jobs",
@@ -97,18 +102,22 @@
                             "Type": "Task",
                             "Resource": "arn:aws:states:::ecs:runTask.sync",
                             "Parameters": {
-                                "Cluster.$": "$.JobDetails.ClusterName",
+                                "Cluster.$": "$.ClusterName",
                                 "LaunchType": "FARGATE",
-                                "TaskDefinition.$": "$.JobDetails.TaskDefinition",
+                                "TaskDefinition.$": "$.TaskDefinition",
                                 "Overrides": {
                                     "ContainerOverrides": [
                                         {
-                                            "Name.$": "$.JobDetails.TaskName",
+                                            "Name.$": "$.WorkerTaskName",
                                             "Command.$": "$.WorkerCommand",
                                             "Environment": [
                                             {
+                                                "Name": "EXECUTION_ID",
+                                                "Value.$": "$.ExecutionId"
+                                            },
+                                            {
                                                 "Name": "AWS_REGION",
-                                                "Value.$": "$.JobDetails.AwsRegion"
+                                                "Value.$": "$.AwsRegion"
                                             },
                                             {
                                                 "Name": "ENDPOINT_NAME",
@@ -128,7 +137,8 @@
                                 },
                                 "NetworkConfiguration": {
                                     "AwsvpcConfiguration": {
-                                        "Subnets.$": "$.JobDetails.Subnets",
+                                        "Subnets.$": "$.Subnets",
+                                        "SecurityGroups.$": "$.SecurityGroups",
                                         "AssignPublicIp": "ENABLED"
                                     }
                                 }

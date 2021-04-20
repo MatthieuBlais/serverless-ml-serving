@@ -1,30 +1,38 @@
+passingCriteria:
+  maxResponseRate: 234
+  percentiles: "50"
 jobs:
-  - dataset:
-      bucket: mybucket
-      key: mykey
+  - name: dddd
+    dataset:
+      bucket: ml-serving-perftest
+      key: _data/tweet-sentiments/tweet-sentiments/dataset.csv
     endpoint:
-      instanceType: c5.xlarge
+      instanceType: ml.c4.xlarge
       defaultInstance: 2
       rps: 10
-      safetyFactor: 30
     scaling:
-      maxResponseRate: 234
-      percentiles: "50"
+      safetyFactor: 0.2
+      minCapacity: 2
+      maxCapacity: 10
     shape:
-      - duration: 49m
-        users: 39000
-        spawn: 3
-      - duration: 49m
-        users: 39000
-        spawn: 3
-      - duration: 49m
-        users: 39000
-        spawn: 3
-      - duration: 49m
-        users: 39000
-        spawn: 3
-      - duration: 49m
-        users: 39000
-        spawn: 3
-  
-    
+      - duration: 100
+        users: 100
+        spawnRate: 100
+      - duration: 220
+        users: 150
+        spawnRate: 100
+      - duration: 340
+        users: 200
+        spawnRate: 100
+      - duration: 400
+        users: 130
+        spawnRate: 100
+      - duration: 500
+        users: 310
+        spawnRate: 100
+      - duration: 740
+        users: 100
+        spawnRate: 100
+      - duration: 1000
+        users: 0
+        spawnRate: 100

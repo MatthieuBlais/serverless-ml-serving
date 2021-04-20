@@ -94,6 +94,7 @@ Resources:
               - 'sagemaker:InvokeEndpoint'
             Resource:
               - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/perf-*"
+              - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/loadtesting-*"
       Roles:
         - !Ref LambdaRole
 
